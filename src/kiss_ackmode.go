@@ -91,6 +91,8 @@ func ackmode_register(pp *packet_t, id [2]byte, channel int, sendfun kiss_sendfu
 // path knows the frame data went out is NOT the point where it has finished
 // transmitting.
 func ackmode_take(pp *packet_t) *ackPending {
+	kiss_origin_forget(pp) // pp has reached a terminal disposition - see kissnet_flush.go
+
 	ackmodeMu.Lock()
 	var entry = ackmodePending[pp]
 	delete(ackmodePending, pp)
@@ -127,6 +129,8 @@ func ackmode_notify_sent(pp *packet_t) {
 // the host's timer is not started for a frame that never went out.  It is a
 // harmless no-op for packets that were not registered.
 func ackmode_discard(pp *packet_t) {
+	kiss_origin_forget(pp) // pp has reached a terminal disposition - see kissnet_flush.go
+
 	ackmodeMu.Lock()
 	delete(ackmodePending, pp)
 	ackmodeMu.Unlock()

@@ -764,6 +764,61 @@ func tq_remove(channel int, prio int) *packet_t {
 
 /*-------------------------------------------------------------------
  *
+ * Name:        tq_flush_matching
+ *
+ * Purpose:     Remove all packets satisfying a predicate from the transmit
+ *		queues, without transmitting them.
+ *
+ * Inputs:	match	- Returns true for packets which should be removed.
+ *
+ * Returns:	The removed packets, no longer linked to each other.
+ *		Caller is responsible for ax25_delete on each.
+ *
+ * Description:	Used when a KISS TCP client disconnects, to abandon frames it
+ *		queued but which have not yet been transmitted.  A packet the
+ *		transmit thread has already removed from the queue (i.e. a
+ *		transmission in progress) is unaffected.
+ *
+ *--------------------------------------------------------------------*/
+
+func tq_flush_matching(match func(pp *packet_t) bool) []*packet_t {
+	var removed []*packet_t
+
+	tq_mutex.Lock()
+
+	for c := range MAX_RADIO_CHANS {
+		for p := range TQ_NUM_PRIO {
+			var prev *packet_t
+
+			var pp = queue_head[c][p]
+			for pp != nil {
+				var pnext = ax25_get_nextp(pp)
+
+				if match(pp) {
+					if prev == nil {
+						queue_head[c][p] = pnext
+					} else {
+						ax25_set_nextp(prev, pnext)
+					}
+
+					ax25_set_nextp(pp, nil)
+					removed = append(removed, pp)
+				} else {
+					prev = pp
+				}
+
+				pp = pnext
+			}
+		}
+	}
+
+	tq_mutex.Unlock()
+
+	return removed
+} /* end tq_flush_matching */
+
+/*-------------------------------------------------------------------
+ *
  * Name:        tq_peek
  *
  * Purpose:     Take a peek at the next frame in the queue but don't remove it.
