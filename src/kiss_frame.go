@@ -626,11 +626,6 @@ func kiss_process_msg(kiss_msg []byte, debug int, kps *kissport_status_s, client
 			text_color_set(DW_COLOR_ERROR)
 			dw_printf("ERROR - Invalid KISS data frame from client app.\n")
 		} else {
-			// Remember which KISS TCP client (if any) queued this frame, so
-			// it can be flushed from the transmit queue if that client
-			// disconnects before it is sent.  See kissnet_flush.go.
-			kiss_origin_register(pp, kps, client)
-
 			/* How can we determine if it is an original or repeated message? */
 			/* If there is at least one digipeater in the frame, AND */
 			/* that digipeater has been used, it should go out quickly thru */
@@ -789,7 +784,6 @@ func kiss_process_msg(kiss_msg []byte, debug int, kps *kissport_status_s, client
 			// entry is present even if xmit_thread transmits immediately, and
 			// so a drop inside tq_append can discard it cleanly.
 			ackmode_register(pp, id, channel, sendfun, kps, client)
-			kiss_origin_register(pp, kps, client) // for flushing on client disconnect - see kissnet_flush.go
 
 			if ax25_get_num_repeaters(pp) >= 1 &&
 				ax25_get_h(pp, AX25_REPEATER_1) > 0 {

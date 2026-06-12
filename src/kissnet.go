@@ -455,11 +455,6 @@ func (kns *KissNetService) get(kps *kissport_status_s, client int) byte {
 		c.Close()
 
 		kps.client_sock[client] = nil
-
-		// Don't keep transmitting on behalf of a client that no longer
-		// exists: abandon any frames it queued which have not yet started
-		// transmitting (a transmission in progress is left to finish).
-		kissnet_flush_client(kps, client)
 	}
 }
 

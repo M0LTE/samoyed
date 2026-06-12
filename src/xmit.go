@@ -400,7 +400,6 @@ func (xs *XmitService) xmit_thread(channel int) {
 					 */
 					switch frame_flavor(pp) {
 					case FLAVOR_SPEECH:
-						ackmode_discard(pp) // sent as speech, not as an AX.25 frame - drop side-table entries
 						xs.xmit_speech(channel, pp)
 
 					case FLAVOR_MORSE:
@@ -422,7 +421,6 @@ func (xs *XmitService) xmit_thread(channel int) {
 							SLEEP_MS(700)
 						}
 
-						ackmode_discard(pp) // sent as Morse, not as an AX.25 frame - drop side-table entries
 						xs.xmit_morse(channel, pp, wpm)
 
 					case FLAVOR_DTMF:
@@ -435,7 +433,6 @@ func (xs *XmitService) xmit_thread(channel int) {
 							speed = 10
 						}
 
-						ackmode_discard(pp) // sent as DTMF, not as an AX.25 frame - drop side-table entries
 						xs.xmit_dtmf(channel, pp, speed)
 
 					case FLAVOR_APRS_DIGI:
