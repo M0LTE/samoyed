@@ -85,6 +85,41 @@ func TestAckmode_DiscardNoSend(t *testing.T) {
 	assert.Empty(t, rec.calls)
 }
 
+// TestAckmode_TakeThenDeliver proves the two-phase path used by the
+// transmitter: take removes the entry (so a later drop cannot match it) but
+// nothing is sent until deliver, which happens only after the frame's audio
+// has actually been played out.
+func TestAckmode_TakeThenDeliver(t *testing.T) {
+	var rec sendfunRecorder
+	var pp = new(packet_t)
+	var kps = new(kissport_status_s)
+
+	ackmode_register(pp, [2]byte{0x56, 0x78}, 1, rec.fn, kps, 2)
+
+	var entry = ackmode_take(pp)
+	require.NotNil(t, entry)
+	assert.Empty(t, rec.calls, "take alone must not send the ack")
+
+	ackmode_notify_sent(pp) // entry already taken - must not send
+	assert.Empty(t, rec.calls)
+
+	ackmode_deliver(entry)
+
+	require.Len(t, rec.calls, 1)
+	var c = rec.calls[0]
+	assert.Equal(t, 1, c.channel)
+	assert.Equal(t, XKISS_CMD_DATA, c.cmd)
+	assert.Equal(t, []byte{0x56, 0x78}, c.fbuf)
+	assert.Same(t, kps, c.kps)
+	assert.Equal(t, 2, c.client)
+}
+
+func TestAckmode_TakeUnknownPacket(t *testing.T) {
+	// Taking an unregistered packet must return nil rather than panicking.
+	var pp = new(packet_t)
+	assert.Nil(t, ackmode_take(pp))
+}
+
 func TestAckmode_DiscardUnknownPacket(t *testing.T) {
 	// Discarding an unregistered packet must not panic.
 	var pp = new(packet_t)

@@ -616,6 +616,14 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 
 	var numframe = 0 /* Number of frames sent during this transmission. */
 
+	/* ACKMODE acknowledgements owed for frames in this transmission.
+	 * send_one_frame only renders the frame into the audio output buffer,
+	 * which completes much faster than real time, so the echoes must not be
+	 * sent until the audio has actually been played out (after audio_wait and
+	 * the wait_more sleep below) - otherwise the host sees the frame
+	 * "transmitted" milliseconds after queueing it. */
+	var pending_acks []*ackPending
+
 	/*
 	 * Transmit the frame.
 	 */
@@ -633,7 +641,10 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 	#endif
 	*/
 	if nb > 0 {
-		ackmode_notify_sent(pp) // now on the air - send ACKMODE ack to the host (ACKMODE frames only)
+		var entry = ackmode_take(pp) // ack the host once the audio has cleared (ACKMODE frames only)
+		if entry != nil {
+			pending_acks = append(pending_acks, entry)
+		}
 	} else {
 		ackmode_discard(pp) // not transmitted - drop any pending ack
 	}
@@ -685,7 +696,10 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 				#endif
 				*/
 				if nb > 0 {
-					ackmode_notify_sent(pp) // bundled frame now on the air - ack the host
+					var entry = ackmode_take(pp) // bundled frame - ack the host once the audio has cleared
+					if entry != nil {
+						pending_acks = append(pending_acks, entry)
+					}
 				} else {
 					ackmode_discard(pp) // not transmitted - drop any pending ack
 				}
@@ -768,6 +782,14 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 	*/
 
 	ptt_set(OCTYPE_PTT, channel, 0)
+
+	/*
+	 * Every frame in this transmission has now cleared the air (audio played
+	 * out, PTT released), so it is finally safe to tell the hosts.
+	 */
+	for _, entry := range pending_acks {
+		ackmode_deliver(entry)
+	}
 } /* end xmit_ax25_frames */
 
 /*-------------------------------------------------------------------
