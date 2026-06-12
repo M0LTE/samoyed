@@ -205,6 +205,7 @@ func tq_append(channel int, prio int, pp *packet_t) {
 			nettnc_send_packet(channel, pp)
 		}
 
+		ackmode_discard(pp) // rerouted off-radio, not transmitted - drop any pending ACKMODE ack
 		ax25_delete(pp)
 
 		return
@@ -222,6 +223,7 @@ func tq_append(channel int, prio int, pp *packet_t) {
 		dw_printf("original KISS protocol specification.  The solution might be to use\n")
 		dw_printf("a command like \"kissparms -c 1 -p radio\" to set CRC none mode.\n")
 		dw_printf("\n")
+		ackmode_discard(pp) // invalid channel, not transmitted - drop any pending ACKMODE ack
 		ax25_delete(pp)
 
 		return
@@ -254,6 +256,7 @@ func tq_append(channel int, prio int, pp *packet_t) {
 		text_color_set(DW_COLOR_ERROR)
 		dw_printf("Transmit packet queue for channel %d is too long.  Discarding packet.\n", channel)
 		dw_printf("Perhaps the channel is so busy there is no opportunity to send.\n")
+		ackmode_discard(pp) // queue overflow, not transmitted - drop any pending ACKMODE ack
 		ax25_delete(pp)
 
 		return
@@ -296,11 +299,17 @@ func tq_append(channel int, prio int, pp *packet_t) {
 	#endif
 	*/
 
-	if xmit_thread_is_waiting[channel] {
-		wake_up_mutex[channel].Lock()
-		wake_up_cond[channel].Signal()
-		wake_up_mutex[channel].Unlock()
-	}
+	// Signal unconditionally, under the wake mutex.  The old code read
+	// xmit_thread_is_waiting WITHOUT the mutex and skipped the signal when it
+	// was false - racing the consumer's check-then-wait in tq_wait_while_empty:
+	// an append landing between the consumer's emptiness check and its Wait()
+	// saw waiting==false, sent nothing, and the consumer slept forever on a
+	// non-empty queue (observed wedged under net-sim: the xmit thread parked in
+	// Wait with 9 frames queued).  Signalling on an empty waiter set is a no-op,
+	// so the guard bought nothing but the race.
+	wake_up_mutex[channel].Lock()
+	wake_up_cond[channel].Signal()
+	wake_up_mutex[channel].Unlock()
 } /* end tq_append */
 
 /*-------------------------------------------------------------------
@@ -479,11 +488,17 @@ func lm_data_request(channel int, prio int, pp *packet_t) {
 	   	  dw_printf ("lm_data_request (): about to wake up xmit thread.\n");
 	   #endif
 	*/
-	if xmit_thread_is_waiting[channel] {
-		wake_up_mutex[channel].Lock()
-		wake_up_cond[channel].Signal()
-		wake_up_mutex[channel].Unlock()
-	}
+	// Signal unconditionally, under the wake mutex.  The old code read
+	// xmit_thread_is_waiting WITHOUT the mutex and skipped the signal when it
+	// was false - racing the consumer's check-then-wait in tq_wait_while_empty:
+	// an append landing between the consumer's emptiness check and its Wait()
+	// saw waiting==false, sent nothing, and the consumer slept forever on a
+	// non-empty queue (observed wedged under net-sim: the xmit thread parked in
+	// Wait with 9 frames queued).  Signalling on an empty waiter set is a no-op,
+	// so the guard bought nothing but the race.
+	wake_up_mutex[channel].Lock()
+	wake_up_cond[channel].Signal()
+	wake_up_mutex[channel].Unlock()
 	//NO!	}
 } /* end lm_data_request */
 
@@ -618,11 +633,17 @@ func lm_seize_request(channel int) {
 	   #endif
 	*/
 
-	if xmit_thread_is_waiting[channel] {
-		wake_up_mutex[channel].Lock()
-		wake_up_cond[channel].Signal()
-		wake_up_mutex[channel].Unlock()
-	}
+	// Signal unconditionally, under the wake mutex.  The old code read
+	// xmit_thread_is_waiting WITHOUT the mutex and skipped the signal when it
+	// was false - racing the consumer's check-then-wait in tq_wait_while_empty:
+	// an append landing between the consumer's emptiness check and its Wait()
+	// saw waiting==false, sent nothing, and the consumer slept forever on a
+	// non-empty queue (observed wedged under net-sim: the xmit thread parked in
+	// Wait with 9 frames queued).  Signalling on an empty waiter set is a no-op,
+	// so the guard bought nothing but the race.
+	wake_up_mutex[channel].Lock()
+	wake_up_cond[channel].Signal()
+	wake_up_mutex[channel].Unlock()
 } /* end lm_seize_request */
 
 /*-------------------------------------------------------------------
@@ -648,53 +669,32 @@ func tq_wait_while_empty(channel int) {
 	*/
 	Assert(channel >= 0 && channel < MAX_RADIO_CHANS)
 
-	tq_mutex.Lock()
+	// Standard condition-variable shape: hold the wake mutex across the
+	// emptiness check AND the Wait, and re-check in a loop.  The old code
+	// checked emptiness, released everything, and only then registered as a
+	// waiter - so an append landing in that gap was checked against
+	// waiting==false (see the producer side) and its wakeup lost; the consumer
+	// then slept forever on a non-empty queue.  With the mutex held from
+	// before the check, a producer's Signal can only happen either before our
+	// check (we see the frame and never wait) or while we are parked in Wait
+	// (delivered) - no losable window.  Lock order is safe: producers take
+	// tq_mutex and release it BEFORE taking the wake mutex, so nobody ever
+	// holds both in the opposite order to us.
+	wake_up_mutex[channel].Lock()
+	for {
+		tq_mutex.Lock()
+		var is_empty = tq_is_empty(channel)
+		tq_mutex.Unlock()
 
-	/* TODO KG
-	#if DEBUG
-		//text_color_set(DW_COLOR_DEBUG);
-		//dw_printf ("tq_wait_while_empty (%d): after pthread_mutex_lock\n", channel);
-	#endif
-	*/
-	var is_empty = tq_is_empty(channel)
+		if !is_empty {
+			break
+		}
 
-	tq_mutex.Unlock()
-
-	/* TODO KG
-	#if DEBUG
-		text_color_set(DW_COLOR_DEBUG);
-		dw_printf ("tq_wait_while_empty (%d) : left critical section\n", channel);
-	#endif
-	*/
-
-	/* TODO KG
-	   #if DEBUG
-	   	text_color_set(DW_COLOR_DEBUG);
-	   	dw_printf ("tq_wait_while_empty (%d): is_empty = %d\n", channel, is_empty);
-	   #endif
-	*/
-
-	if is_empty {
-		/* TODO KG
-		#if DEBUG
-			  text_color_set(DW_COLOR_DEBUG);
-			  dw_printf ("tq_wait_while_empty (%d): SLEEP - about to call cond wait\n", channel);
-		#endif
-		*/
-		wake_up_mutex[channel].Lock()
 		xmit_thread_is_waiting[channel] = true
 		wake_up_cond[channel].Wait()
 		xmit_thread_is_waiting[channel] = false
-
-		/* TODO KG
-		#if DEBUG
-			  text_color_set(DW_COLOR_DEBUG);
-			  dw_printf ("tq_wait_while_empty (%d): WOKE UP - returned from cond wait, err = %d\n", channel, err);
-		#endif
-		*/
-
-		wake_up_mutex[channel].Unlock()
 	}
+	wake_up_mutex[channel].Unlock()
 
 	/* TODO KG
 	#if DEBUG

@@ -400,6 +400,7 @@ func (xs *XmitService) xmit_thread(channel int) {
 					 */
 					switch frame_flavor(pp) {
 					case FLAVOR_SPEECH:
+						ackmode_discard(pp) // sent as speech, not as an AX.25 frame - drop any pending ACKMODE entry
 						xs.xmit_speech(channel, pp)
 
 					case FLAVOR_MORSE:
@@ -421,6 +422,7 @@ func (xs *XmitService) xmit_thread(channel int) {
 							SLEEP_MS(700)
 						}
 
+						ackmode_discard(pp) // sent as Morse, not as an AX.25 frame - drop any pending ACKMODE entry
 						xs.xmit_morse(channel, pp, wpm)
 
 					case FLAVOR_DTMF:
@@ -433,6 +435,7 @@ func (xs *XmitService) xmit_thread(channel int) {
 							speed = 10
 						}
 
+						ackmode_discard(pp) // sent as DTMF, not as an AX.25 frame - drop any pending ACKMODE entry
 						xs.xmit_dtmf(channel, pp, speed)
 
 					case FLAVOR_APRS_DIGI:
@@ -469,6 +472,7 @@ func (xs *XmitService) xmit_thread(channel int) {
 					dw_printf("%s", stemp) /* stations followed by : */
 					ax25_safe_print(pinfo, !ax25_is_aprs(pp))
 					dw_printf("\n")
+					ackmode_discard(pp) // never transmitted - drop any pending ACKMODE ack
 					ax25_delete(pp)
 				} /* wait for clear channel error. */
 			} /* Have pp */
@@ -615,6 +619,14 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 
 	var numframe = 0 /* Number of frames sent during this transmission. */
 
+	/* ACKMODE acknowledgements owed for frames in this transmission.
+	 * send_one_frame only renders the frame into the audio output buffer,
+	 * which completes much faster than real time, so the echoes must not be
+	 * sent until the audio has actually been played out (after audio_wait and
+	 * the wait_more sleep below) - otherwise the host sees the frame
+	 * "transmitted" milliseconds after queueing it. */
+	var pending_acks []*ackPending
+
 	/*
 	 * Transmit the frame.
 	 */
@@ -631,6 +643,14 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 		dw_printf ("xmit_thread: t=%.3f, nb=%d, num_bits=%d, numframe=%d\n", dtime_now()-time_ptt, nb, num_bits, numframe);
 	#endif
 	*/
+	if nb > 0 {
+		var entry = ackmode_take(pp) // ack the host once the audio has cleared (ACKMODE frames only)
+		if entry != nil {
+			pending_acks = append(pending_acks, entry)
+		}
+	} else {
+		ackmode_discard(pp) // not transmitted - drop any pending ack
+	}
 	ax25_delete(pp)
 
 	/*
@@ -678,6 +698,14 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 					        dw_printf ("xmit_thread: t=%.3f, nb=%d, num_bits=%d, numframe=%d\n", dtime_now()-time_ptt, nb, num_bits, numframe);
 				#endif
 				*/
+				if nb > 0 {
+					var entry = ackmode_take(pp) // bundled frame - ack the host once the audio has cleared
+					if entry != nil {
+						pending_acks = append(pending_acks, entry)
+					}
+				} else {
+					ackmode_discard(pp) // not transmitted - drop any pending ack
+				}
 				ax25_delete(pp)
 			}
 		} else {
@@ -757,6 +785,14 @@ func (xs *XmitService) xmit_ax25_frames(channel int, prio int, pp *packet_t, max
 	*/
 
 	ptt_set(OCTYPE_PTT, channel, 0)
+
+	/*
+	 * Every frame in this transmission has now cleared the air (audio played
+	 * out, PTT released), so it is finally safe to tell the hosts.
+	 */
+	for _, entry := range pending_acks {
+		ackmode_deliver(entry)
+	}
 } /* end xmit_ax25_frames */
 
 /*-------------------------------------------------------------------
