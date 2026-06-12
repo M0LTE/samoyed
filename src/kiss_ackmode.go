@@ -82,25 +82,45 @@ func ackmode_register(pp *packet_t, id [2]byte, channel int, sendfun kiss_sendfu
 	ackmodeMu.Unlock()
 }
 
-// ackmode_notify_sent sends the ACKMODE acknowledgement for pp, if it was an
-// ACKMODE frame, and removes the pending entry.  Call this immediately after
-// the frame has been keyed out over the air.  It is a harmless no-op for
-// packets that were not registered (i.e. ordinary, non-ACKMODE frames).
-func ackmode_notify_sent(pp *packet_t) {
+// ackmode_take removes and returns the pending ACKMODE entry for pp, or nil if
+// pp was not registered (i.e. an ordinary, non-ACKMODE frame).  The caller
+// becomes responsible for sending the acknowledgement with ackmode_deliver
+// once the frame's audio has fully cleared the air.  This split exists because
+// rendering a frame into the audio output buffer completes much faster than
+// real time (especially with UDP audio output), so the point where the xmit
+// path knows the frame data went out is NOT the point where it has finished
+// transmitting.
+func ackmode_take(pp *packet_t) *ackPending {
+	kiss_origin_forget(pp) // pp has reached a terminal disposition - see kissnet_flush.go
+
 	ackmodeMu.Lock()
-	var entry, ok = ackmodePending[pp]
+	var entry = ackmodePending[pp]
 	delete(ackmodePending, pp)
 	ackmodeMu.Unlock()
 
-	if !ok {
-		return
-	}
+	return entry
+}
 
+// ackmode_deliver sends the ACKMODE acknowledgement for an entry previously
+// returned by ackmode_take.  Call this only after the frame's audio has been
+// played out (i.e. the frame has actually cleared the air).
+func ackmode_deliver(entry *ackPending) {
 	// Echo the two opaque id bytes back to the originating client.  The
 	// command byte is XKISS_CMD_DATA (0x0C); sendfun (SendRecPacket) adds the
 	// channel number in the high nibble.
 	var ack = []byte{entry.id[0], entry.id[1]}
 	entry.sendfun(entry.channel, XKISS_CMD_DATA, ack, len(ack), entry.kps, entry.client)
+}
+
+// ackmode_notify_sent sends the ACKMODE acknowledgement for pp, if it was an
+// ACKMODE frame, and removes the pending entry.  Call this only once the
+// frame has fully cleared the air.  It is a harmless no-op for packets that
+// were not registered (i.e. ordinary, non-ACKMODE frames).
+func ackmode_notify_sent(pp *packet_t) {
+	var entry = ackmode_take(pp)
+	if entry != nil {
+		ackmode_deliver(entry)
+	}
 }
 
 // ackmode_discard removes the pending ACKMODE entry for pp without sending an
@@ -109,6 +129,8 @@ func ackmode_notify_sent(pp *packet_t) {
 // the host's timer is not started for a frame that never went out.  It is a
 // harmless no-op for packets that were not registered.
 func ackmode_discard(pp *packet_t) {
+	kiss_origin_forget(pp) // pp has reached a terminal disposition - see kissnet_flush.go
+
 	ackmodeMu.Lock()
 	delete(ackmodePending, pp)
 	ackmodeMu.Unlock()
